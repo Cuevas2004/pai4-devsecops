@@ -1,0 +1,132 @@
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: juice-shop
+  APP_PORT: 3000
+
+jobs:
+  # ───────────── Etapa 1: BUILD (Persona A) ─────────────
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir imagen Docker
+        run: docker build -t $IMAGE_NAME:${{ github.sha }} .
+      - name: Exportar imagen
+        run: docker save $IMAGE_NAME:${{ github.sha }} | gzip > image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: image.tar.gz
+          retention-days: 1
+
+  # ───────────── Etapa 2: ANÁLISIS ESTÁTICO (Persona B) ─────────────
+  # Gate A: modo aviso (continue-on-error en el step de la herramienta)
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO Persona B: Semgrep -> semgrep-report.json
+      - name: Semgrep (placeholder)
+        continue-on-error: true
+        run: echo "TODO Persona B" && mkdir -p reports && echo '{"results":[]}' > reports/semgrep-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-sast
+          path: reports/
+
+  sca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO Persona B: OWASP Dependency-Check -> dependency-check-report.json
+      - name: Dependency-Check (placeholder)
+        continue-on-error: true
+        run: echo "TODO Persona B" && mkdir -p reports && echo '{"dependencies":[]}' > reports/dependency-check-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-sca
+          path: reports/
+
+  # ───────────── Etapa 3: STAGING + DAST (A despliega, C añade ZAP) ─────────────
+  staging-dast:
+    runs-on: ubuntu-latest
+    needs: [build, sast, sca]
+    if: always() && needs.build.result == 'success'   # los jobs de análisis no bloquean (modo aviso)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: image
+      - name: Cargar imagen y desplegar en staging (runner)
+        run: |
+          gunzip -c image.tar.gz | docker load
+          docker run -d --name staging -p $APP_PORT:3000 $IMAGE_NAME:${{ github.sha }}
+      - name: Esperar a que la app responda
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:$APP_PORT/rest/admin/application-version && exit 0
+            sleep 5
+          done
+          docker logs staging; exit 1
+      # TODO Persona C: ZAP contra http://localhost:3000 -> reports/zap-report.json (solo vuestra app)
+      - name: ZAP (placeholder)
+        continue-on-error: true
+        run: echo "TODO Persona C" && mkdir -p reports && echo '{"site":[]}' > reports/zap-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-dast
+          path: reports/
+      - name: Parar staging
+        if: always()
+        run: docker rm -f staging || true
+
+  # ───────────── Gate B: BLOQUEANTE ─────────────
+  quality-gate:
+    runs-on: ubuntu-latest
+    needs: [staging-dast]
+    if: always() && needs.staging-dast.result != 'skipped'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: report-*
+          path: reports
+          merge-multiple: true
+      - name: Evaluar umbral (críticas/altas)
+        run: python3 .github/scripts/quality_gate.py reports --fail-on high
+
+  # ───────────── Etapa 4: PRODUCCIÓN ─────────────
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [quality-gate]
+    if: github.ref == 'refs/heads/main'
+    environment: production        # aprobación manual configurable en Settings > Environments
+    steps:
+      - run: echo "Despliegue a producción (simulado)"
+
+  # ───────────── Importación a DefectDojo (Persona C) ─────────────
+  import-defectdojo:
+    runs-on: ubuntu-latest
+    needs: [sast, sca, staging-dast, quality-gate]
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: report-*
+          path: reports
+          merge-multiple: true
+      # TODO Persona C: curl a la API con ${{ secrets.DEFECTDOJO_URL }} y ${{ secrets.DEFECTDOJO_API_KEY }}
+      - run: echo "TODO Persona C"
