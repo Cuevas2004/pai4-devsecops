@@ -65,8 +65,8 @@ jobs:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
           mkdir -p reports /tmp/odc-data
+          chmod -R 777 reports /tmp/odc-data
           docker run --rm \
-            --user $(id -u):$(id -g) \
             -e NVD_API_KEY \
             -v "${{ github.workspace }}:/src" \
             -v "/tmp/odc-data:/usr/share/dependency-check/data" \
