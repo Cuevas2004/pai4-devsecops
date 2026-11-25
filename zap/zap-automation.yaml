@@ -1,0 +1,78 @@
+# Plan de automatización de ZAP para el pipeline DevSecOps.
+# El alcance está limitado a la aplicación levantada en localhost por el propio job.
+env:
+  contexts:
+    - name: juice-shop-local
+      urls:
+        - http://localhost:3000
+      includePaths:
+        - "http://localhost:3000.*"
+      excludePaths: []
+  parameters:
+    failOnError: false
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  # Rastreo tradicional: enlaces y formularios servidos en el HTML inicial.
+  - type: spider
+    parameters:
+      context: juice-shop-local
+      url: http://localhost:3000
+      maxDuration: 5
+      maxDepth: 6
+      maxChildren: 30
+
+  # Rastreo AJAX: necesario porque Juice Shop es una SPA Angular.
+  - type: spiderAjax
+    parameters:
+      context: juice-shop-local
+      url: http://localhost:3000
+      maxDuration: 8
+      maxCrawlDepth: 5
+      numberOfBrowsers: 2
+      inScopeOnly: true
+
+  # Espera a que terminen los análisis pasivos lanzados por los rastreos.
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 10
+
+  # Escaneo activo acotado en tiempo para que el job sea predecible.
+  - type: activeScan
+    parameters:
+      context: juice-shop-local
+      maxRuleDurationInMins: 2
+      maxScanDurationInMins: 20
+      threadPerHost: 2
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 5
+
+  # JSON: lo consume .github/scripts/quality_gate.py (site[].alerts[].riskcode).
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /zap/wrk/reports/
+      reportFile: zap-report.json
+      reportTitle: "ZAP DAST - OWASP Juice Shop (localhost)"
+      reportDescription: "Escaneo dinamico del pipeline DevSecOps contra la aplicacion local"
+
+  # XML: formato que importa DefectDojo con scan_type "ZAP Scan".
+  - type: report
+    parameters:
+      template: traditional-xml
+      reportDir: /zap/wrk/reports/
+      reportFile: zap-report.xml
+      reportTitle: "ZAP DAST - OWASP Juice Shop (localhost)"
+      reportDescription: "Escaneo dinamico del pipeline DevSecOps contra la aplicacion local"
+
+  # HTML: evidencia legible para el informe y los anexos.
+  - type: report
+    parameters:
+      template: traditional-html
+      reportDir: /zap/wrk/reports/
+      reportFile: zap-report.html
+      reportTitle: "ZAP DAST - OWASP Juice Shop (localhost)"
+      reportDescription: "Escaneo dinamico del pipeline DevSecOps contra la aplicacion local"

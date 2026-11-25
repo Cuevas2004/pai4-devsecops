@@ -13,11 +13,14 @@ permissions:
 env:
   IMAGE_NAME: juice-shop
   APP_PORT: 3000
+  TARGET_URL: http://localhost:3000
+  ZAP_IMAGE: zaproxy/zap-stable:latest
 
 jobs:
   # ───────────── Etapa 1: BUILD (Persona A) ─────────────
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Construir imagen Docker
@@ -45,6 +48,7 @@ jobs:
         with:
           name: report-sast
           path: reports/
+          if-no-files-found: warn
 
   sca:
     runs-on: ubuntu-latest
@@ -59,10 +63,12 @@ jobs:
         with:
           name: report-sca
           path: reports/
+          if-no-files-found: warn
 
   # ───────────── Etapa 3: STAGING + DAST (A despliega, C añade ZAP) ─────────────
   staging-dast:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     needs: [build, sast, sca]
     if: always() && needs.build.result == 'success'   # los jobs de análisis no bloquean (modo aviso)
     steps:
@@ -80,15 +86,36 @@ jobs:
             sleep 5
           done
           docker logs staging; exit 1
-      # TODO Persona C: ZAP contra http://localhost:3000 -> reports/zap-report.json (solo vuestra app)
-      - name: ZAP (placeholder)
+      - name: Comprobar alcance del escaneo (solo localhost)
+        run: |
+          if [ "$TARGET_URL" != "http://localhost:3000" ]; then
+            echo "::error::El DAST solo puede apuntar a http://localhost:3000 (aplicación propia)"
+            exit 1
+          fi
+      - name: Preparar directorio de informes
+        run: |
+          mkdir -p reports
+          chmod 777 reports
+      - name: ZAP - escaneo DAST contra localhost
         continue-on-error: true
-        run: echo "TODO Persona C" && mkdir -p reports && echo '{"site":[]}' > reports/zap-report.json
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/zap/zap-automation.yaml:/zap/wrk/zap-automation.yaml:ro" \
+            -v "$PWD/reports:/zap/wrk/reports:rw" \
+            "$ZAP_IMAGE" \
+            zap.sh -cmd -config proxy.port=8090 -autorun /zap/wrk/zap-automation.yaml
+      - name: Comprobar informes ZAP
+        if: always()
+        run: |
+          ls -l reports
+          test -s reports/zap-report.json || { echo "::error::No se generó zap-report.json"; exit 1; }
+          test -s reports/zap-report.xml || echo "::warning::No se generó zap-report.xml"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: report-dast
           path: reports/
+          if-no-files-found: warn
       - name: Parar staging
         if: always()
         run: docker rm -f staging || true
@@ -118,15 +145,42 @@ jobs:
       - run: echo "Despliegue a producción (simulado)"
 
   # ───────────── Importación a DefectDojo (Persona C) ─────────────
+  # Último job: se ejecuta siempre, aunque el quality gate o cualquier etapa fallen.
   import-defectdojo:
     runs-on: ubuntu-latest
-    needs: [sast, sca, staging-dast, quality-gate]
+    timeout-minutes: 15
+    needs: [build, sast, sca, staging-dast, quality-gate]
     if: always()
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - name: Descargar informes de todas las etapas
+        uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: report-*
           path: reports
           merge-multiple: true
-      # TODO Persona C: curl a la API con ${{ secrets.DEFECTDOJO_URL }} y ${{ secrets.DEFECTDOJO_API_KEY }}
-      - run: echo "TODO Persona C"
+      - name: Importar informes en DefectDojo
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p reports
+          python3 .github/scripts/import_defectdojo.py reports 2>&1 | tee reports/defectdojo-import.log
+        env:
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+          DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
+      - name: Publicar resumen de la importación
+        if: always()
+        run: |
+          if [ -f reports/defectdojo-import.json ]; then
+            cat reports/defectdojo-import.json
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: defectdojo-import
+          path: |
+            reports/defectdojo-import.json
+            reports/defectdojo-import.log
+          if-no-files-found: warn
