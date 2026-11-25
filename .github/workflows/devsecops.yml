@@ -59,24 +59,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: OWASP Dependency-Check (SCA)
-        continue-on-error: true
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+      - name: Generar package-lock.json para análisis SCA
         run: |
-          mkdir -p reports /tmp/odc-data
-          chmod -R 777 reports /tmp/odc-data
-          docker run --rm \
-            -e NVD_API_KEY \
-            -v "${{ github.workspace }}:/src" \
-            -v "/tmp/odc-data:/usr/share/dependency-check/data" \
-            owasp/dependency-check:latest \
-            --project "OWASP Juice Shop" \
-            --scan /src \
-            --format JSON \
-            --out /src/reports \
-            --failOnCVSS 7 \
-            --nvdApiKey "$NVD_API_KEY"
+          npm install --package-lock-only --ignore-scripts
+          if [ -f frontend/package.json ]; then
+            npm --prefix frontend install --package-lock-only --ignore-scripts
+          fi
+      - name: OWASP Dependency-Check (SCA)
+        uses: dependency-check/Dependency-Check_Action@main
+        continue-on-error: true
+        with:
+          project: 'OWASP Juice Shop'
+          path: '.'
+          format: 'JSON'
+          out: 'reports'
+          args: >
+            --failOnCVSS 7
+            --nvdApiKey ${{ secrets.NVD_API_KEY }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
